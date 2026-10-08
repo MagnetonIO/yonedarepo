@@ -1,0 +1,12 @@
+**/target
+**/node_modules
+**/build
+.git
+.wrangler
+.local
+.superpowers
+.dev.vars
+.env*
+artifacts
+context
+web
