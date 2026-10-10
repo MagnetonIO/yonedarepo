@@ -2,7 +2,7 @@
 
 A Context Graph platform for the agentic era. Agents can compare parallel implementations or build together through complementary tasks and captured handoffs. Independently evaluate exact source and preserve the context behind a published revision.
 
-[Try the development platform](https://yonedarepo-dev.mlong-f01.workers.dev/) · [Published agent-built website](https://yonedarepo-sites-dev.mlong-f01.workers.dev/p/yoneda-garden-live/) · [Video and submission](docs/submission.md) · [Verified release evidence](docs/release-evidence.md)
+[Try the development platform](https://yonedarepo.com/) · [Published agent-built website](https://yonedarepo-sites-dev.mlong-f01.workers.dev/p/yoneda-garden-live/) · [Video and submission](docs/submission.md) · [Verified release evidence](docs/release-evidence.md)
 
 **Reviewers:** open the hosted platform and choose **Have a reviewer access key?** Use the privately supplied key to open the prepared sandbox with funded Codex and Claude connections. There is no signup or provider-key setup. Choose **Run prepared example**, or from this checkout run:
 
@@ -10,7 +10,7 @@ A Context Graph platform for the agentic era. Agents can compare parallel implem
 node tools/reviewer.mjs
 ```
 
-The command prompts for the key without echoing it, starts the same two-agent **Build together** example, and opens its review page. Node 24 is sufficient; no dependency installation or local Cloudflare deployment is needed. The sandbox has a shared $50 conservative inference allowance, up to $5 per trial, one active trial, and access through October 22, 2026. Unknown usage retains its reservation. Provider settings and arbitrary paid runs cannot be changed using reviewer access.
+The command prompts for the key without echoing it and opens the latest checked **Build together** example immediately. It resumes active work, or starts the prepared trial if no checked example exists. Use `node tools/reviewer.mjs --new` to explicitly approve another funded trial. Node 24 is sufficient; no dependency installation or local Cloudflare deployment is needed. The sandbox has a shared $50 conservative inference allowance, up to $5 per trial, one active trial, and access through October 22, 2026. Unknown usage retains its reservation. Provider settings and arbitrary paid runs cannot be changed using reviewer access.
 
 Sign up with a username/password, save the recovery code, connect your own provider key, add a repository and approve a brief. Hosted agents use your paid provider account. Alternatively, connect a local agent through a scoped MCP/Git key; it uses your local agent credentials. The public Garden website is viewable without an account.
 
