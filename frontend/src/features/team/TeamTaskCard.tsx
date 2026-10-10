@@ -6,6 +6,7 @@ import { TeamHandoff } from './TeamHandoff';
 import { TeamSource } from './TeamSource';
 import {
   canRetryTeamTask,
+  classifyTeamHandoffs,
   dependencyBlockers,
   type TeamRecord,
   taskError,
@@ -34,9 +35,10 @@ export function TeamTaskCard({
   onProviders?: () => void;
 }) {
   const execution = snapshot.executions.find((item) => item.id === task.execution_id);
-  const handoffs = (snapshot.team_handoffs ?? []).filter(
+  const taskHandoffs = (snapshot.team_handoffs ?? []).filter(
     (item) => item.run_id === run.id && item.task_id === task.task_id,
   );
+  const { assertions, captures, superseded } = classifyTeamHandoffs(taskHandoffs);
   const blockers = dependencyBlockers(task, tasks);
   const error = taskError(task, execution);
   const [repairBrief, setRepairBrief] = useState('');
@@ -117,6 +119,7 @@ export function TeamTaskCard({
               : 'Repair task from current revision'}
           </summary>
           <form
+            className="team-task-repair-form"
             onSubmit={(event) => {
               event.preventDefault();
               if (repairSending) return;
@@ -177,6 +180,7 @@ export function TeamTaskCard({
                 required
                 minLength={8}
                 maxLength={4000}
+                rows={4}
                 placeholder="Describe the focused repair. Dependent tasks will be refreshed by the backend."
                 disabled={busy || repairSending}
               />
@@ -219,9 +223,16 @@ export function TeamTaskCard({
             <pre>{(task.output.paths ?? []).join('\n') || 'No changed paths'}</pre>
           </>
         )}
-        {handoffs.length ? (
-          handoffs.map((handoff) => <TeamHandoff key={handoff.id} handoff={handoff} />)
-        ) : (
+        {assertions.map((handoff) => (
+          <TeamHandoff key={handoff.id} handoff={handoff} />
+        ))}
+        {captures.map((handoff) => (
+          <TeamHandoff key={handoff.id} handoff={handoff} />
+        ))}
+        {superseded.map((handoff) => (
+          <TeamHandoff key={handoff.id} handoff={handoff} />
+        ))}
+        {!assertions.length && !captures.length && !superseded.length && (
           <p>
             {task.status === 'complete'
               ? 'No agent-authored handoff was recorded. The source capture remains available.'
