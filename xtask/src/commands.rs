@@ -1,10 +1,12 @@
 use crate::{
+    layout::{DevelopmentPaths, FRONTEND, PLATFORM_CONFIG, SITES_CONFIG, WORKER_CRATE},
     live,
     process::{Result, deploy_token, ensure_token, run},
 };
 pub async fn execute(args: Vec<String>) -> Result<()> {
     let command = args.first().map(String::as_str).unwrap_or("help");
     match command {
+        "context-study" => crate::context_study::execute(&args).await,
         "cloudflare-configure" => crate::cloudflare::configure(&args),
         "cloudflare-deploy" => crate::cloudflare_deploy::deploy(&args).await,
         "doctor" => {
@@ -49,42 +51,32 @@ pub async fn execute(args: Vec<String>) -> Result<()> {
             run("pnpm", &["check"])?;
             run("pnpm", &["test"])?;
             run("pnpm", &["test:runtime"])?;
-            run("pnpm", &["--dir", "web", "build"])?;
+            run("pnpm", &["test:frontend"])?;
+            run("pnpm", &["--dir", FRONTEND, "build"])?;
             Ok(())
         }
         "build" => {
             build_wasm()?;
-            run("pnpm", &["--dir", "web", "build"])
+            run("pnpm", &["--dir", FRONTEND, "build"])
         }
         "dev" => {
             ensure_token()?;
             build_wasm()?;
-            run("pnpm", &["--dir", "web", "build"])?;
+            run("pnpm", &["--dir", FRONTEND, "build"])?;
             let target = if args.iter().any(|v| v == "--name") {
                 Some(crate::cloudflare::deployment(&args)?)
             } else {
                 None
             };
-            let platform = target
-                .as_ref()
-                .map(|dir| dir.join("platform.json"))
-                .unwrap_or_else(|| "wrangler.jsonc".into());
-            let sites = target
-                .as_ref()
-                .map(|dir| dir.join("sites.json"))
-                .unwrap_or_else(|| "sites/wrangler.jsonc".into());
+            let paths = DevelopmentPaths::new(target.as_deref());
             if let Some(dir) = &target {
-                let vars = dir.join(".dev.vars");
-                if !vars.exists() {
-                    std::fs::copy(".dev.vars", &vars)?;
-                    crate::cloudflare::private(&vars, false)?;
-                }
+                crate::local_config::named_vars(std::path::Path::new("."), dir)?;
             }
-            let state_dir = target
-                .map(|dir| dir.join("state").to_string_lossy().into_owned())
-                .unwrap_or_else(|| ".wrangler/state".into());
+            // Absolute persistence paths keep the existing state when config directories move.
+            let state = std::env::current_dir()?.join(&paths.state);
+            let state_dir = state.to_str().ok_or("Invalid state path")?;
             crate::cloudflare::wrangler(
-                &platform,
+                &paths.platform,
                 &[
                     "d1",
                     "migrations",
@@ -92,26 +84,24 @@ pub async fn execute(args: Vec<String>) -> Result<()> {
                     "INDEX",
                     "--local",
                     "--persist-to",
-                    &state_dir,
+                    state_dir,
                 ],
             )?;
             crate::dev::serve(
-                platform.to_str().ok_or("Invalid platform path")?,
-                sites.to_str().ok_or("Invalid sites path")?,
-                &state_dir,
+                paths.platform.to_str().ok_or("Invalid platform path")?,
+                paths.sites.to_str().ok_or("Invalid sites path")?,
+                state_dir,
             )
             .await
         }
         "deploy" => {
             ensure_token()?;
             build_wasm()?;
-            run("pnpm", &["--dir", "web", "build"])?;
+            run("pnpm", &["--dir", FRONTEND, "build"])?;
             deploy_token()?;
-            run(
-                "pnpm",
+            crate::cloudflare::wrangler(
+                std::path::Path::new(PLATFORM_CONFIG),
                 &[
-                    "exec",
-                    "wrangler",
                     "d1",
                     "migrations",
                     "apply",
@@ -119,17 +109,8 @@ pub async fn execute(args: Vec<String>) -> Result<()> {
                     "--remote",
                 ],
             )?;
-            run("pnpm", &["exec", "wrangler", "deploy"])?;
-            run(
-                "pnpm",
-                &[
-                    "exec",
-                    "wrangler",
-                    "deploy",
-                    "--config",
-                    "sites/wrangler.jsonc",
-                ],
-            )
+            crate::cloudflare::wrangler(std::path::Path::new(PLATFORM_CONFIG), &["deploy"])?;
+            crate::cloudflare::wrangler(std::path::Path::new(SITES_CONFIG), &["deploy"])
         }
         "seed-template" | "seed-demo" | "demo" | "verify-live" | "upgrade-policy" => {
             let url = args
@@ -151,7 +132,7 @@ pub async fn execute(args: Vec<String>) -> Result<()> {
         }
         _ => {
             println!(
-                "cargo xtask <cloudflare-configure|cloudflare-deploy|doctor|setup|check|build|dev|deploy|seed-template|seed-demo|demo|verify-live|upgrade-policy> [--url URL]\nLocal check uses no paid inference. demo starts real agents. verify-live checks existing recorded evidence."
+                "cargo xtask <cloudflare-configure|cloudflare-deploy|context-study|doctor|setup|check|build|dev|deploy|seed-template|seed-demo|demo|verify-live|upgrade-policy> [--url URL]\nLocal check uses no paid inference. demo starts real agents. verify-live checks existing recorded evidence."
             );
             Ok(())
         }
@@ -160,7 +141,7 @@ pub async fn execute(args: Vec<String>) -> Result<()> {
 pub(crate) fn build_wasm() -> Result<()> {
     let status = std::process::Command::new("worker-build")
         .arg("--release")
-        .current_dir("crates/yoneda-worker")
+        .current_dir(WORKER_CRATE)
         .status()?;
     if !status.success() {
         return Err("Wasm build failed".into());
