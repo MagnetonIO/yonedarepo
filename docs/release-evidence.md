@@ -1,6 +1,16 @@
-# Product MVP release evidence — October 8, 2026
+# Product MVP release evidence — October 8–10, 2026
 
 The product runs on [Cloudflare](https://yonedarepo-dev.mlong-f01.workers.dev/), with a real [agent-built Garden website](https://yonedarepo-sites-dev.mlong-f01.workers.dev/p/yoneda-garden-live/). [Machine-readable evidence](release-evidence.json) records identities, revisions, epoch timestamps, independent checks, the decision, canonical readback and served asset hashes. These are development verification results, not a production readiness claim.
+
+## Current production rollout and isolated acceptance — October 10, 2026
+
+Production rollout is complete: Worker version `7a159115-15af-4353-8132-da744dfdae52` runs code revision `68fb72e`, app version 24, and all seven health checks pass. The pinned Linux runtime image passed 71 tests at `sha256:4b5439bb9e9504b3ee0466bf73edfa77ae02addea599707e1b3a7615f2f197b6`. The root-UID Git dubious-ownership failure was reproduced RED and fixed GREEN in `f92aa6f`; the fix is deployed. The previous Claude `claude-sonnet-5-5` reviewer check (`reviewer-f07f61a0-97b6-48e9-b9de-521753744063`, candidate `20dc24de9`, published HEAD `3bbe63325`) remains historical evidence for an earlier deployed version; the checked-in [reviewer acceptance JSON](reviewer-acceptance.json) is older still.
+
+The current local gate passed: 278 Rust tests (181 app, 16 core, 65 runtime, 1 Cloudflare and 15 xtask), 286 Workers tests across 56 files, 55 frontend tests across 13 files, and 11 Node tests. Formatting, Clippy with warnings denied, TypeScript, Wasm and production builds also passed.
+
+Isolated hosted acceptance was recorded at `2026-10-10T20:35:37.924Z` against source revision `3abade23e2593812fadd751fdb2eecfa9a09f8a1`. The controlled fixture used no paid inference. It exercised Git contribution capture, controlled capacity deferrals with refunded attempts, injected publication acknowledgment loss followed by retry and canonical Git readback, and a disjoint two-parent refresh. Both files were preserved and the fresh evaluation was eligible. This is bounded fixture evidence, not a broad capacity or scale result, overlapping resolver acceptance, or human product acceptance. See [the sanitized acceptance record](platform-acceptance.json); it records the fixture, decisions, events and runtime image.
+
+The earlier paid Git-native Build Together run failed after both agents finished editing because Git rejected `/work/repo` as dubious ownership under the root process. That Linux regression was fixed RED to GREEN and deployed. A repair of the same approved run, preserving its existing budget, is about to execute; its outcome is unknown. This remains ongoing and is not yet Build Together acceptance. Human reviewer rehearsal is planned after the development run, as clarified by the user, and remains pending. Public source/video refresh is also pending. The October 8–10 sections below retain their original scope and results.
 
 ## Concurrent hosted agents
 

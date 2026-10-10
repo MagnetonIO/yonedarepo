@@ -52,6 +52,26 @@ const snapshot: Snapshot = {
 };
 const noop = () => {};
 describe('reviewer run permissions', () => {
+  it('keeps an unresolved deep link on its requested run instead of showing the newest result', () => {
+    const html = renderToStaticMarkup(
+      createElement(Exploration, {
+        snapshot: { ...snapshot, runs: [{ id: 'reviewer-e5', intent: 'Latest failed trial' }] },
+        reviewer: true,
+        onChange: async () => {},
+        onError: noop,
+        onProviders: noop,
+        onAgents: noop,
+        onContext: noop,
+        onSelectedRun: noop,
+        initialRunId: 'reviewer-f07',
+        requestedRunError: 'Run "reviewer-f07" was not found in this repository history.',
+      }),
+    );
+    expect(html).toContain('reviewer-f07');
+    expect(html).toContain('was not found in this repository history');
+    expect(html).not.toContain('Latest failed trial');
+  });
+
   it('keeps an empty reviewer workspace focused on funded trials without contribution setup', () => {
     const props = {
       snapshot,
@@ -75,7 +95,7 @@ describe('reviewer run permissions', () => {
       run: { id: 'run' },
       busy: false,
       canStart: true,
-      onRepair: noop,
+      onRepair: async () => true,
       reviewer: true,
     };
     expect(renderToStaticMarkup(createElement(RunToolbar, toolbar))).not.toContain('New run');
@@ -114,6 +134,7 @@ describe('reviewer run permissions', () => {
       run: { id: 'run', status: 'failed' },
       busy: false,
       onRetry: noop,
+      onRepair: async () => true,
       onProviders: noop,
       reviewer: true,
     };
@@ -121,6 +142,25 @@ describe('reviewer run permissions', () => {
     expect(
       renderToStaticMarkup(createElement(TeamWorkflow, { ...props, reviewer: false })),
     ).toContain('Retry task');
+  });
+  it('allows an approved reviewer to repair stale team output without exposing retry', () => {
+    const task = {
+      ...snapshot.team_tasks?.[0],
+      status: 'complete',
+      output: { revision: { commit: 'old' }, paths: ['src/a.rs'] },
+    };
+    const repairedSnapshot = { ...snapshot, team_tasks: [task] };
+    const props = {
+      snapshot: repairedSnapshot,
+      run: { id: 'run', status: 'exploring', team_plan: { tasks: [{ id: 'task' }] } },
+      busy: false,
+      onRetry: noop,
+      onRepair: async () => true,
+      reviewer: true,
+    };
+    const html = renderToStaticMarkup(createElement(TeamWorkflow, props));
+    expect(html).toContain('Repair task using existing trial approval');
+    expect(html).not.toContain('Retry task');
   });
   it('passes permissions through RunDetail, hiding provider changes while preserving eligible candidate review', () => {
     const run = {
@@ -170,6 +210,7 @@ describe('reviewer run permissions', () => {
       onRestart: noop,
       onCancel: noop,
       onRetry: noop,
+      onRepairTask: async () => true,
       onAccept: async () => true,
       onProviders: noop,
       onContext: noop,

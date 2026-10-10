@@ -10,7 +10,7 @@ A Context Graph platform for the agentic era. Agents can compare parallel implem
 node tools/reviewer.mjs
 ```
 
-The command prompts for the key without echoing it and opens the latest checked **Build together** example immediately. It resumes active work, or starts the prepared trial if no checked example exists. Use `node tools/reviewer.mjs --new` to explicitly approve another funded trial. Node 24 is sufficient; no dependency installation or local Cloudflare deployment is needed. The sandbox has a shared $50 conservative inference allowance, up to $5 per trial, one active trial, and access through October 22, 2026. Unknown usage retains its reservation. Provider settings and arbitrary paid runs cannot be changed using reviewer access.
+The command prompts for the key without echoing it and opens the latest checked **Build together** example immediately. A private access file can be used without putting the key in shell history: `node tools/reviewer.mjs --key-file /path/to/access.json --checked --no-open`. `--checked` reads the latest checked run and never starts or resumes a trial; `--no-open` prints its URL without launching a browser. Use `node tools/reviewer.mjs --new` only to explicitly approve another funded trial. Run `node tools/reviewer.mjs --help` for options. Node 24 is sufficient; no dependency installation or local Cloudflare deployment is needed. The sandbox has a shared $50 conservative inference allowance, up to $5 per trial, one active trial, and access through October 22, 2026. Unknown usage retains its reservation. Provider settings and arbitrary paid runs cannot be changed using reviewer access.
 
 Sign up with a username/password, save the recovery code, connect your own provider key, add a repository and approve a brief. Hosted agents use your paid provider account. Alternatively, connect a local agent through a scoped MCP/Git key; it uses your local agent credentials. The public Garden website is viewable without an account.
 
@@ -30,6 +30,12 @@ After publication, **Update website** / **Update project** continues the winning
 [Current UI and deployment verification](docs/ui-workflow-evidence.md) · [Presenter video script and production brief](docs/video/production-brief.md)
 
 Rust owns the domain, transactional ledger, native agent supervisor, MCP server, source capture and verifier. Cloudflare hosts the Worker, Durable Objects, Queues, R2, D1, Containers and Artifacts. React 19 and React Flow provide the browser. A small TypeScript adapter connects SDK capabilities absent from workers-rs.
+
+### Current source wave and deployment status
+
+The Git-native workspace and revision-capture wave is deployed to production at build revision `ca9542c` (Worker version `a23708e4`). Production health and the new repository overview/history operations are responding; an initial Durable Object code-adoption delay resolved on retry. The complete local gate passed: 271 Rust tests (174 app, 16 core, 65 runtime, 1 Cloudflare and 15 xtask), 283 Workers tests across 55 files, 52 frontend tests across 13 files, and 11 Node tests (7 reviewer client, 2 relay and 2 profile), plus formatting, Clippy, TypeScript, Wasm and production builds.
+
+Isolated hosted acceptance passed for external Git contribution capture, capacity deferrals with refunded attempts, publication acknowledgment loss followed by retry and canonical readback, and a fresh disjoint two-parent refresh whose fresh checks passed with both files preserved. The pinned Linux runtime image passed 65 tests at digest `sha256:d936e75493d065ac763314590ee8d684f537dd481feb61b3e1b23e52ff2dc6b7`. This was a controlled fixture, not human product acceptance. The separate paid Git-native Build Together trial failed after both agents finished editing: root Git revision detection after `chown` rejected `/work/repo` as dubious ownership. A Linux regression is being reproduced and fixed. The plan is to retry the same approved run after the runtime-image fix, preserving its existing budget; the hosted end-to-end flow is not green. Public source/video refresh and the human rehearsal (which requires the reviewer key) remain pending. See [submission](docs/submission.md), [release evidence](docs/release-evidence.md) and the [runbook](docs/runbook.md) for the evidence boundary.
 
 ## Get running
 

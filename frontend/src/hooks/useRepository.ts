@@ -1,35 +1,67 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, api } from '../lib/api';
-import type { AccountIdentity, ProjectMetadata, Repository, Snapshot } from '../lib/types';
+import type {
+  AccountIdentity,
+  ProjectMetadata,
+  Repository,
+  RepositoryOverview,
+  RunDetail,
+  RunsPage,
+  Snapshot,
+} from '../lib/types';
+import {
+  emptySnapshot,
+  findRunInPages,
+  mergeRunDetails,
+  RequestedRunNotFoundError,
+  scopedRunIds,
+} from './repositorySnapshot';
+
 export function useRepository() {
+  const deepLink = useRef<{ repositoryId: string; runId: string } | null>(null);
+  if (!deepLink.current) {
+    const query =
+      typeof window === 'undefined'
+        ? new URLSearchParams()
+        : new URLSearchParams(window.location.search);
+    deepLink.current = { repositoryId: query.get('repo') ?? '', runId: query.get('run') ?? '' };
+  }
+  const requestedRepositoryId = deepLink.current.repositoryId;
+  const requestedRunId = deepLink.current.runId;
   const [repositories, setRepositories] = useState<Repository[]>([]);
-  const [id, setCurrentId] = useState('');
+  const [id, setCurrentId] = useState(requestedRepositoryId);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const snapshotRef = useRef<Snapshot | null>(snapshot);
+  snapshotRef.current = snapshot;
   const [authenticated, setAuthenticated] = useState(false);
   const [identity, setIdentity] = useState<AccountIdentity | null>(null);
   const [actionError, setActionError] = useState('');
   const [pollError, setPollError] = useState('');
+  const [requestedRunError, setRequestedRunError] = useState('');
   const setError = useCallback((message: string) => {
     setActionError(message);
     setPollError('');
   }, []);
   const [loading, setLoading] = useState(true);
   const generation = useRef(0);
-  const selectedId = useRef('');
+  const selectedId = useRef(requestedRepositoryId);
   const deletedIds = useRef(new Set<string>());
+  const requestedRunMissing = useRef(false);
   const requests = useRef(new Map<string, Promise<void>>());
   const clear = useCallback(() => {
     generation.current++;
-    selectedId.current = '';
+    selectedId.current = requestedRepositoryId;
     deletedIds.current.clear();
+    requestedRunMissing.current = false;
     setAuthenticated(false);
     setIdentity(null);
     setRepositories([]);
     setCurrentId('');
     setSnapshot(null);
+    setRequestedRunError('');
     setError('');
     setLoading(false);
-  }, [setError]);
+  }, [requestedRepositoryId, setError]);
   const fail = useCallback(
     (e: unknown, polling = false) => {
       if (e instanceof ApiError && e.code === 'UNAUTHORIZED') clear();
@@ -52,6 +84,13 @@ export function useRepository() {
       setAuthenticated(true);
       setIdentity(result.identity ?? null);
       setRepositories(available);
+      if (requestedRepositoryId && !available.some((repo) => repo.id === requestedRepositoryId)) {
+        selectedId.current = '';
+        setCurrentId('');
+        setSnapshot(null);
+        setError(`Repository "${requestedRepositoryId}" was not found for this link.`);
+        return;
+      }
       const next = available.some((repo) => repo.id === selectedId.current)
         ? selectedId.current
         : (available[0]?.id ?? '');
@@ -64,7 +103,7 @@ export function useRepository() {
     } finally {
       if (generation.current === current) setLoading(false);
     }
-  }, [fail, setError]);
+  }, [fail, requestedRepositoryId, setError]);
   const updateProject = useCallback((result: ProjectMetadata, requestedId: string) => {
     if (result.id !== requestedId || !['provisioning', 'ready', 'failed'].includes(result.status))
       throw new Error('The repository setup response could not be verified. Refresh its status.');
@@ -94,13 +133,55 @@ export function useRepository() {
           }
           return;
         }
-        const result = await api<Snapshot>(`repos/${id}/snapshot`);
-        if (!stillCurrent() || result.repository.id !== id) return;
-        result.runs.sort((a, b) => a.created_at - b.created_at);
+        const currentSnapshot = snapshotRef.current;
+        const [overview, page] = await Promise.all([
+          api<RepositoryOverview>(`repos/${id}/overview`),
+          api<RunsPage>(`repos/${id}/runs?limit=25`),
+        ]);
+        if (!stillCurrent() || overview.repository.id !== id) return;
+        setRepositories((previous) =>
+          previous.map((repo) => (repo.id === id ? { ...repo, ...overview.repository } : repo)),
+        );
+        const baseSnapshot =
+          currentSnapshot?.repository.id === id ? currentSnapshot : emptySnapshot(overview);
+        const requestedRunForRepository = id === requestedRepositoryId ? requestedRunId : '';
+        let requestedRunFound = !requestedRunForRepository
+          ? undefined
+          : baseSnapshot.runs.find((run) => run.id === requestedRunForRepository);
+        if (requestedRunForRepository && !requestedRunFound && !requestedRunMissing.current) {
+          try {
+            requestedRunFound = await findRunInPages(
+              requestedRunForRepository,
+              page,
+              (cursor, watermark) => {
+                const query = new URLSearchParams({
+                  limit: '25',
+                  cursor,
+                  watermark: String(watermark),
+                });
+                return api<RunsPage>(`repos/${id}/runs?${query}`);
+              },
+            );
+            if (!stillCurrent()) return;
+            setRequestedRunError('');
+          } catch (error) {
+            if (!stillCurrent()) return;
+            if (error instanceof RequestedRunNotFoundError) {
+              requestedRunMissing.current = true;
+              setRequestedRunError(error.message);
+            } else throw error;
+          }
+        }
+        const runIds = scopedRunIds(page.items, baseSnapshot.runs);
+        if (requestedRunFound && !runIds.includes(requestedRunForRepository))
+          runIds.push(requestedRunForRepository);
+        const details = await Promise.all(
+          runIds.map((runId) => api<RunDetail>(`repos/${id}/runs/${encodeURIComponent(runId)}`)),
+        );
+        if (!stillCurrent()) return;
+        const next = mergeRunDetails(baseSnapshot, details, overview);
         setSnapshot((previous) =>
-          previous && previous.repository.id === result.repository.id && previous.seq > result.seq
-            ? previous
-            : result,
+          previous && previous.repository.id === id && previous.seq > next.seq ? previous : next,
         );
         setPollError('');
       } catch (e) {
@@ -123,7 +204,16 @@ export function useRepository() {
     } finally {
       if (requests.current.get(key) === request) requests.current.delete(key);
     }
-  }, [id, fail, project?.status, discover, updateProject, setError]);
+  }, [
+    id,
+    fail,
+    project?.status,
+    discover,
+    updateProject,
+    setError,
+    requestedRepositoryId,
+    requestedRunId,
+  ]);
   const retrySetup = useCallback(async () => {
     if (!id || id !== selectedId.current || deletedIds.current.has(id)) return;
     const current = ++generation.current;
@@ -154,6 +244,8 @@ export function useRepository() {
       selectedId.current = id;
       setCurrentId(id);
       setSnapshot(null);
+      requestedRunMissing.current = false;
+      setRequestedRunError('');
       setError('');
       setLoading(false);
     },
@@ -223,5 +315,7 @@ export function useRepository() {
     clear,
     signOut,
     deleteRepository,
+    requestedRunId: id === requestedRepositoryId ? requestedRunId : '',
+    requestedRunError,
   };
 }

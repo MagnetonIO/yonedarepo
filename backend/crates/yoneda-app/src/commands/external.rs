@@ -2,6 +2,7 @@
 use crate::storage::*;
 use serde_json::{Value, json};
 use yoneda_core::{Error, Result};
+const MAX_ACTIVE_WORK_RUNS: i64 = 6;
 pub(super) fn handle<S: SqlStore>(db: &S, c: Value, now: i64) -> Result<Value> {
     let op = string(&c, "op")?;
     if op == "external_begin" {
@@ -20,6 +21,9 @@ pub(super) fn handle<S: SqlStore>(db: &S, c: Value, now: i64) -> Result<Value> {
         return Ok(j);
     }
     if op == "external_submit" && j["status"] == "done" {
+        if j["workspace_transport"] == "git-native-v1" {
+            return Ok(json!({"status":"completed","id":jid}));
+        }
         if j["result"]["workspace"] != c["workspace"] {
             return Err(Error::new(
                 "IDEMPOTENCY_CONFLICT",
@@ -61,15 +65,44 @@ pub(super) fn handle<S: SqlStore>(db: &S, c: Value, now: i64) -> Result<Value> {
                 ));
             }
             j["submitted_revision"] = c["revision"].clone();
+            if j["workspace_transport"] == "git-native-v1" {
+                j["git_verified"] = json!(true);
+                j["fork_revision"] = c["revision"].clone();
+            }
             save(db, "jobs", &jid, &j)?;
             let mut e = get(db, "executions", &id)?;
             e["contribution_revision"] = c["revision"].clone();
+            if j["workspace_transport"] == "git-native-v1" {
+                e["workspace_transport"] = json!("git-native-v1");
+                e["git_verified"] = json!(true);
+                e["fork_revision"] = c["revision"].clone();
+                e["submitted_revision"] = c["revision"].clone();
+            }
             save_execution(db, &e, now)?;
             Ok(j)
         }
         "external_submit" => {
             if j["external_phase"] != "frozen" || j["submitted_revision"].is_null() {
                 return Err(Error::new("FENCED", "Bind the frozen submission first"));
+            }
+            if j["workspace_transport"] == "git-native-v1" {
+                if j["git_verified"] != true
+                    || j["fork_revision"] != j["submitted_revision"]
+                    || j["fork_revision"]["repository"] != j["external_fork"]
+                {
+                    return Err(Error::new(
+                        "FENCED",
+                        "Git contribution revision is not the verified immutable fork binding",
+                    ));
+                }
+                let revision = j["submitted_revision"].clone();
+                let result = json!({"git_verified":true,"submitted_revision":revision,"fork_revision":revision});
+                let completed = super::completion::handle(
+                    db,
+                    json!({"op":"finish","job_id":jid,"epoch":j["epoch"],"result":result}),
+                    now,
+                )?;
+                return Ok(completed);
             }
             let workspace = hash(&c, "workspace", &[64])?;
             super::completion::handle(
@@ -105,8 +138,13 @@ fn begin<S: SqlStore>(db: &S, c: &Value, now: i64) -> Result<Value> {
             "Repository is not ready for a contribution",
         ));
     }
-    if all(db, "runs")?.len() >= 100 {
-        return Err(bad("Repository run limit reached"));
+    if active_run_count(db)? >= MAX_ACTIVE_WORK_RUNS
+        || external_run_count(db)? >= MAX_ACTIVE_WORK_RUNS
+    {
+        return Err(Error::new(
+            "ACTIVE_RUN_LIMIT",
+            "Repository or external contributor active run limit reached",
+        ));
     }
     let intent = string(c, "intent")?;
     let context = c.get("context").cloned().unwrap_or(json!([]));
@@ -138,8 +176,13 @@ fn begin<S: SqlStore>(db: &S, c: &Value, now: i64) -> Result<Value> {
         return Err(bad("Criteria must be bounded statements"));
     }
     let rid = format!("run:{id}");
+    let transport = if r["workspace_transport"] == "git-native-v1" {
+        "git-native-v1"
+    } else {
+        "json-v1"
+    };
     let base = json!({"repository":format!("{}/{}",string(&r["remote"],"namespace")?,string(&r["remote"],"name")?),"commit":r["published_commit"]});
-    let mut run = json!({"id":rid,"intent":intent,"criteria":criteria,"context":context,"context_records":records,"policy":r["policy"],"base":base,"base_version":r["version"],"status":"exploring","created_at":now,"external":true,"context_usage_version":1});
+    let mut run = json!({"id":rid,"intent":intent,"criteria":criteria,"context":context,"context_records":records,"policy":r["policy"],"base":base,"base_version":r["version"],"status":"exploring","created_at":now,"external":true,"workspace_transport":transport,"context_usage_version":1});
     super::study::apply(&mut run, super::study::freeze(db, &r)?);
     create(db, "runs", &rid, &run)?;
     node(
@@ -159,7 +202,7 @@ fn begin<S: SqlStore>(db: &S, c: &Value, now: i64) -> Result<Value> {
         "implements",
         "external agent request",
     )?;
-    let execution = json!({"id":id,"run_id":rid,"harness":"external","strategy":"Local agent contribution","role":"coding","status":"running","context":[],"base":base,"epoch":1,"started_at":now,"grant":grant});
+    let execution = json!({"id":id,"run_id":rid,"harness":"external","strategy":"Local agent contribution","role":"coding","status":"running","workspace_transport":transport,"context":[],"base":base,"epoch":1,"started_at":now,"grant":grant});
     create(db, "executions", &id, &execution)?;
     node(
         db,
@@ -171,7 +214,7 @@ fn begin<S: SqlStore>(db: &S, c: &Value, now: i64) -> Result<Value> {
         execution.clone(),
     )?;
     edge(db, &rid, &id, "depends_on", "external contribution")?;
-    let job = json!({"id":jid,"kind":"agent","status":"running","external":true,"external_grant":grant,"external_fork":string(c,"fork")?,"external_phase":"working","fingerprint":fingerprint,"attempt":2,"epoch":1,"lease_until":now+3_600_000,"attempt_deadline":now+3_600_000,"deadline":now+3_600_000,"payload":{"execution":execution,"run":run,"policy":r["policy"]}});
+    let job = json!({"id":jid,"kind":"agent","status":"running","external":true,"external_grant":grant,"external_fork":string(c,"fork")?,"external_phase":"working","workspace_transport":transport,"fingerprint":fingerprint,"attempt":2,"epoch":1,"lease_until":now+3_600_000,"attempt_deadline":now+3_600_000,"deadline":now+3_600_000,"payload":{"workspace_transport":transport,"execution":execution,"run":run,"policy":r["policy"]}});
     create(db, "jobs", &jid, &job)?;
     super::context_sessions::bind(db, c, &job, now)?;
     event(

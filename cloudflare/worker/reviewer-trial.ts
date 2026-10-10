@@ -1,5 +1,5 @@
 import { checkLedger } from './runtime';
-import { ledger } from './storage';
+import { ledger, sha } from './storage';
 import type { Env, Json } from './types';
 import { workspace } from './workspace';
 
@@ -7,6 +7,7 @@ import { workspace } from './workspace';
 export function trialRequest(id: string) {
   return {
     id,
+    workspace_transport: 'git-native-v1',
     mode: 'collaborate',
     intent:
       'Build an accessible San Jose cycling trail guide together, with trail data and a bilingual English/Spanish interface.',
@@ -92,19 +93,102 @@ export async function reviewerTrialStatus(env: Env, owner: string) {
   let policy = await workspace(env, owner, { op: 'reviewer_status' });
   const repo = policy.repo_id;
   if (policy.active_trial) {
-    const snapshot = await ledger(env, repo, { op: 'snapshot', _workspace: owner });
-    const run = snapshot.runs.find((r: Json) => r.id === policy.active_trial);
-    const active = snapshot.executions.some(
-      (e: Json) =>
-        e.run_id === policy.active_trial &&
-        ['queued', 'running', 'capturing', 'evaluating'].includes(e.status),
-    );
-    if (run && !active && !['planning', 'integrating'].includes(run.status)) {
-      await workspace(env, owner, { op: 'reviewer_trial_complete', id: policy.active_trial });
+    const detail = await runDetailIfPresent(env, repo, owner, policy.active_trial);
+    const run = detail?.runs?.find((r: Json) => r.id === policy.active_trial);
+    const active =
+      detail?.executions?.some(
+        (e: Json) =>
+          e.run_id === policy.active_trial &&
+          ['queued', 'running', 'capturing', 'evaluating'].includes(e.status),
+      ) ?? false;
+    const terminal = ['ready', 'failed', 'cancelled', 'accepted'].includes(run?.status);
+    if (run && policy._active_trial_status === 'repair_pending' && (!terminal || active)) {
+      await workspace(env, owner, {
+        op: 'reviewer_trial_repair_finish',
+        id: policy.active_trial,
+        request_id: policy._active_repair_request_id,
+        fingerprint: policy._active_repair_fingerprint,
+      }).catch(() => undefined);
+    } else if (run && terminal && !active) {
+      await workspace(env, owner, {
+        op: 'reviewer_trial_complete',
+        id: policy.active_trial,
+        expected_epoch: policy.trial_epoch ?? 0,
+      });
       policy = await workspace(env, owner, { op: 'reviewer_status' });
     }
   }
+  delete policy._active_trial_status;
+  delete policy._active_repair_request_id;
+  delete policy._active_repair_fingerprint;
   return policy;
+}
+
+export async function reviewerRepairFingerprint(input: Json) {
+  const keys = [
+    'request_id',
+    'expected_commit',
+    'expected_version',
+    'run_id',
+    'expected_plan_revision',
+    'task_ids',
+    'expected_task_revisions',
+    'owner_brief',
+  ];
+  const normalized = Object.fromEntries(
+    keys.filter((key) => input[key] !== undefined).map((key) => [key, input[key]]),
+  );
+  return sha(JSON.stringify(normalized));
+}
+
+export async function finishReviewerRepair(
+  env: Env,
+  owner: string,
+  id: string,
+  requestId: string,
+  fingerprint: string,
+) {
+  return workspace(env, owner, {
+    op: 'reviewer_trial_repair_finish',
+    id,
+    request_id: requestId,
+    fingerprint,
+  });
+}
+
+export async function abortReviewerRepair(
+  env: Env,
+  owner: string,
+  id: string,
+  requestId: string,
+  fingerprint: string,
+) {
+  return workspace(env, owner, {
+    op: 'reviewer_trial_repair_abort',
+    id,
+    request_id: requestId,
+    fingerprint,
+  });
+}
+
+export async function submitReviewerRepair(
+  env: Env,
+  owner: string,
+  repo: string,
+  command: Json,
+): Promise<Json> {
+  const runId = command.run_id;
+  const requestId = command.request_id;
+  const fingerprint = await reviewerRepairFingerprint(command);
+  try {
+    const result = await ledger(env, repo, command);
+    await finishReviewerRepair(env, owner, runId, requestId, fingerprint);
+    return result;
+  } catch (failure) {
+    if ((failure as Error & { code?: string }).code)
+      await abortReviewerRepair(env, owner, runId, requestId, fingerprint).catch(() => undefined);
+    throw failure;
+  }
 }
 
 export async function startTrial(env: Env, owner: string, requestId: string) {
@@ -127,17 +211,16 @@ export async function resumeTrial(env: Env, owner: string) {
 }
 
 async function ensureTrialStarted(env: Env, owner: string, repo: string, id: string) {
-  const snapshot = await ledger(env, repo, { op: 'snapshot', _workspace: owner });
-  const existing = snapshot.runs.find((r: Json) => r.id === id);
+  const repository = await ledger(env, repo, { op: 'repository_status', _workspace: owner });
+  const existing = await runDetailIfPresent(env, repo, owner, id);
   if (!existing) {
     const approval = trialRequest(id);
-    checkLedger(snapshot, approval);
+    checkLedger({ capabilities: repository.capabilities }, approval);
     try {
       await ledger(env, repo, { ...approval, op: 'start_run', _workspace: owner });
     } catch (failure) {
       // A lost acknowledgement may have committed. Verify before reporting failure.
-      const updated = await ledger(env, repo, { op: 'snapshot', _workspace: owner });
-      if (!updated.runs.some((r: Json) => r.id === id)) throw failure;
+      if (!(await runDetailIfPresent(env, repo, owner, id))) throw failure;
     }
   }
   return {
@@ -145,4 +228,19 @@ async function ensureTrialStarted(env: Env, owner: string, repo: string, id: str
     run_id: id,
     url: `/?repo=${encodeURIComponent(repo)}&run=${encodeURIComponent(id)}`,
   };
+}
+
+async function runDetailIfPresent(
+  env: Env,
+  repo: string,
+  owner: string,
+  id: string,
+): Promise<Json | null> {
+  try {
+    return await ledger(env, repo, { op: 'run_detail', run_id: id, _workspace: owner });
+  } catch (failure) {
+    const error = failure as Error & { code?: string };
+    if (error.code === 'NOT_FOUND' && error.message === `Unknown runs ${id}`) return null;
+    throw failure;
+  }
 }

@@ -16,6 +16,7 @@ mod delegation;
 mod deletion;
 #[path = "tests/execution_logs.rs"]
 mod execution_logs;
+mod git_transport;
 #[path = "tests/graph_status.rs"]
 mod graph_status;
 #[path = "tests/model_budgets.rs"]
@@ -221,7 +222,7 @@ fn acceptance_is_idempotent_and_publication_has_a_separate_receipt() {
             .iter()
             .any(|edge| edge["relation"] == "published_as")
     );
-    assert_eq!(call(&db,json!({"op":"why","commit":"cccccccccccccccccccccccccccccccccccccccc","path":"src/retry.rs"})).unwrap()["coverage"],"recorded");
+    assert_eq!(call(&db,json!({"op":"why","commit":"cccccccccccccccccccccccccccccccccccccccc","path":"src/retry.rs"})).unwrap()["coverage"],"unknown");
 }
 #[test]
 fn stale_head_and_failed_checks_never_select_code() {
@@ -266,7 +267,7 @@ fn migrations_are_versioned_repeatable_and_upgrade_existing_data() {
         .unwrap();
     assert_eq!(
         versions,
-        json!([{"version":1},{"version":2},{"version":3},{"version":4},{"version":5},{"version":6},{"version":7},{"version":8}])
+        json!([{"version":1},{"version":2},{"version":3},{"version":4},{"version":5},{"version":6},{"version":7},{"version":8},{"version":9},{"version":10},{"version":11},{"version":12}])
             .as_array()
             .unwrap()
             .clone()
@@ -275,7 +276,7 @@ fn migrations_are_versioned_repeatable_and_upgrade_existing_data() {
     assert_eq!(
         db.query("SELECT COUNT(*) AS count FROM schema_migrations", &[])
             .unwrap()[0]["count"],
-        8
+        12
     );
     db.query("DELETE FROM schema_migrations WHERE version=2", &[])
         .unwrap();
@@ -295,6 +296,9 @@ fn migrations_are_versioned_repeatable_and_upgrade_existing_data() {
     .unwrap();
     assert_eq!(migrate(&db).unwrap_err().code, "MIGRATION_DRIFT");
 }
+
+#[path = "tests/history.rs"]
+mod history_tests;
 
 #[test]
 fn exhausted_publication_exposes_operator_recovery_state() {

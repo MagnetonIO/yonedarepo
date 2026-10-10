@@ -2,8 +2,10 @@ use crate::storage::{SqlStore, string};
 use serde_json::Value;
 use yoneda_core::{Error, Result};
 mod acceptance;
+mod archive;
 mod capture_completion;
 mod completion;
+mod conflicts;
 mod context_access;
 mod context_evidence;
 mod context_sessions;
@@ -74,10 +76,14 @@ pub(crate) fn dispatch<S: SqlStore>(db: &S, c: Value) -> Result<Value> {
     match string(&c, "op")?.as_str() {
         "repository_status" => {
             let mut r = crate::storage::repo(db)?;
-            r["capabilities"] = serde_json::json!({"workspace_authority":1});
+            r["capabilities"] = repository::capabilities(db, now)?;
             Ok(r)
         }
         "resync_repository" | "defer_job" => recovery::handle(db, &c, now),
+        "conflict_status"
+        | "refresh_candidate"
+        | "resolve_conflict"
+        | "conflict_refresh_complete" => conflicts::handle(db, &c, now),
         "deletion_status" => deletion::status(db),
         "retry_deletion_cleanup" => deletion::retry_cleanup(db, &c),
         "external_begin" | "external_check" | "external_status" | "external_freeze"
@@ -85,14 +91,26 @@ pub(crate) fn dispatch<S: SqlStore>(db: &S, c: Value) -> Result<Value> {
         "peer_status" => peers::read(db, &c, now),
         "update_policy" => policy::update(db, c, now),
         "configure_context_study" => study::configure(db, c, now),
-        "init" | "snapshot" => repository::handle(db, c, now),
+        "init"
+        | "snapshot"
+        | "repository_overview"
+        | "runs_page"
+        | "run_detail"
+        | "run_graph_page"
+        | "candidate_record" => repository::handle(db, c, now),
+        "archive_candidates"
+        | "archive_prepare"
+        | "archive_commit"
+        | "archive_status"
+        | "schedule_archive_due" => archive::handle(db, c, now),
         "start_run" | "cancel_run" => runs::handle(db, c, now),
         "delegate_agent" | "delegation_status" => delegation::handle(db, c, now),
         "team_context"
         | "team_plan_propose"
         | "task_handoff"
         | "integration_request"
-        | "retry_team_task" => team::handle(db, c, now),
+        | "retry_team_task"
+        | "repair_team" => team::handle(db, c, now),
         "context_publish" | "context_search" | "context_get" => typed_context::handle(db, c, now),
         "record_context_access" => context_access::record(db, c, now),
         "context_usage" => context_usage::read(db, c, now),
@@ -104,7 +122,7 @@ pub(crate) fn dispatch<S: SqlStore>(db: &S, c: Value) -> Result<Value> {
         }
         "context" | "publish_artifact" | "authorize_artifact" | "get_artifact"
         | "hint_complete" => mcp::handle(db, c, now),
-        "outbox" | "outbox_sent" | "events" => events::handle(db, c, now),
+        "outbox" | "outbox_sent" | "outbox_prune" | "events" => events::handle(db, c, now),
         "why" | "graph" | "observe" | "decision" => history::handle(db, c, now),
         "finish" | "verify_finish" => completion::handle(db, c, now),
         "accept" => acceptance::handle(db, c, now),

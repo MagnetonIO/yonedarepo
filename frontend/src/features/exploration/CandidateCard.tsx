@@ -3,8 +3,8 @@ import { short } from '../../lib/api';
 import { ExecutionFailure } from './ExecutionFailure';
 import { executionStatus } from './ExecutionHierarchy';
 import { ExecutionLogs } from './ExecutionLogs';
+import { LazyCandidateDiff } from './LazyCandidateDiff';
 import { SiteLink } from './SiteLink';
-import { SourceDiff } from './SourceDiff';
 
 const descriptions: Record<string, string> = {
   minimal: 'Aim for the smallest coherent change.',
@@ -153,10 +153,7 @@ export function CandidateCard({
                 <p>Waiting for independent verification of this captured revision.</p>
               )}
             </details>
-            <details>
-              <summary>Review changes</summary>
-              <SourceDiff diff={candidate.diff} />
-            </details>
+            <LazyCandidateDiff key={candidate.id} repo={repo} candidate={candidate} />
           </>
         )}
       </div>

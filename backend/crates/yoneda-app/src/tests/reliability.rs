@@ -1,5 +1,56 @@
 use super::*;
 
+#[test]
+fn refreshed_candidate_requires_its_reserved_repository_version() {
+    let db = repo();
+    let request = ready(&db);
+    db.query("UPDATE candidates SET payload=json_set(payload,'$.refresh_expected_version',7) WHERE id='candidate-a'", &[]).unwrap();
+    assert_eq!(call(&db, request).unwrap_err().code, "HEAD_MOVED");
+}
+
+#[test]
+fn exhausted_evaluator_makes_the_candidate_terminal() {
+    let db = repo();
+    captured(&db);
+    call(&db, json!({"op":"claim","job_id":"evaluate:candidate-a"})).unwrap();
+    call(&db, json!({"op":"fail","job_id":"evaluate:candidate-a","epoch":1,"retryable":false,"error":"Evaluator exhausted"})).unwrap();
+    let candidate = crate::storage::get(&db, "candidates", "candidate-a").unwrap();
+    assert_eq!(candidate["status"], "failed");
+}
+
+#[test]
+fn failed_external_evaluation_finishes_run_without_a_mode_field() {
+    let db = repo();
+    captured(&db);
+    db.query("UPDATE runs SET payload=json_set(json_remove(payload,'$.mode'),'$.external',json('true')) WHERE id='run-one'", &[]).unwrap();
+    db.query("UPDATE executions SET payload=json_set(payload,'$.status','cancelled') WHERE id<>'run-one:codex-minimal'",&[]).unwrap();
+    call(&db, json!({"op":"claim","job_id":"evaluate:candidate-a"})).unwrap();
+    call(&db,json!({"op":"fail","job_id":"evaluate:candidate-a","epoch":1,"retryable":false,"error":"Controlled external evaluator failure"})).unwrap();
+    assert_eq!(
+        crate::storage::get(&db, "runs", "run-one").unwrap()["status"],
+        "failed"
+    );
+}
+
+#[test]
+fn all_failed_compare_agents_finish_the_run() {
+    let db = repo_with_policy(super::single_agent::policy());
+    call(&db,json!({"op":"start_run","id":"failures","intent":"Compare bounded approaches","agents":[{"provider":"mimo","model":"mimo-v2.6-flash","strategy":"minimal"},{"provider":"zai","model":"glm-4.7-flash","strategy":"accessible"}]})).unwrap();
+    for index in 1..=2 {
+        let id = format!("job:failures:agent-{index}");
+        call(&db, json!({"op":"claim","job_id":id})).unwrap();
+        call(
+            &db,
+            json!({"op":"fail","job_id":id,"epoch":1,"retryable":false,"error":"Agent failed"}),
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        crate::storage::get(&db, "runs", "failures").unwrap()["status"],
+        "failed"
+    );
+}
+
 fn blocked(db: &NativeStore, conflict: bool) -> Value {
     let receipt = call(db, ready(db)).unwrap();
     let id = format!("publish:{}", receipt["id"].as_str().unwrap());
@@ -210,6 +261,23 @@ fn capacity_defer_rejects_unknown_failure_or_started_runtime_without_refund() {
         "INVALID_STATE"
     );
     assert_eq!(crate::storage::get(&db, "jobs", id).unwrap()["attempt"], 1);
+}
+
+#[test]
+fn rollout_defer_preserves_attempt_before_execution_and_rejects_after_start() {
+    let db = repo();
+    start(&db);
+    let id = "job:run-one:research";
+    call(&db, json!({"op":"claim","job_id":id})).unwrap();
+    let deferred = call(
+        &db,
+        json!({"op":"defer_job","job_id":id,"epoch":1,"reason":"runtime_rollout"}),
+    )
+    .unwrap();
+    assert_eq!(deferred["attempt"], 0);
+    let next = call(&db, json!({"op":"claim","job_id":id,"now":6000})).unwrap();
+    call(&db, json!({"op":"progress","job_id":id,"epoch":next["epoch"],"now":6000,"progress":{"stage":"container_ready"}})).unwrap();
+    assert_eq!(call(&db, json!({"op":"defer_job","job_id":id,"epoch":next["epoch"],"now":6000,"reason":"runtime_rollout"})).unwrap_err().code,"INVALID_STATE");
 }
 
 #[test]

@@ -1,12 +1,14 @@
 import type { OutboundHandler } from '@cloudflare/containers';
+import { injectPublicationAckLoss } from './acceptance-faults';
 import { source } from './artifacts';
-import { CANDIDATE_DIFF_LIMIT } from './evidence';
+import { captureResult } from './capture-result';
 import { hostedMcp } from './hosted-mcp';
 import { error, readJson, response } from './http';
 import { attemptLog, failureCode } from './logging';
 import { scopeFor } from './scope';
 import { ledger, object, readObject } from './storage';
 import { teamAttemptSource } from './team-source';
+import { testBundle } from './test-bundle';
 import type { Env, Json } from './types';
 export const brokerHandler: OutboundHandler<Env> = async (req, env, ctx) => {
   try {
@@ -20,6 +22,7 @@ export const brokerHandler: OutboundHandler<Env> = async (req, env, ctx) => {
     const body = await readJson(req, path === '/mcp' ? 1024 * 1024 : 32 * 1024 * 1024);
     // Await inside this boundary so ledger rejections reach the agent as typed JSON.
     if (path === '/mcp') return await hostedMcp(env, scope, body);
+    if (path === '/test-bundle') return response(await testBundle(env, scope, String(body.digest)));
     if (path === '/heartbeat' || path === '/progress')
       return response(
         await ledger(env, scope.repo_id, {
@@ -105,35 +108,46 @@ export const brokerHandler: OutboundHandler<Env> = async (req, env, ctx) => {
       return response(result);
     }
     if (path === '/complete') {
+      if (await injectPublicationAckLoss(env, scope, body)) {
+        await ledger(env, scope.repo_id, {
+          op: 'progress',
+          ...identity,
+          progress: { stage: 'controlled_publish_ack_loss', target: body.commit },
+        });
+        return error(
+          'CONTROLLED_ACK_LOSS',
+          'Disposable acceptance exercise: publication acknowledgement withheld',
+          503,
+        );
+      }
       let command: Json = { op: 'finish', ...identity, result: body };
+      if (job.kind === 'agent' && job.payload.workspace_transport === 'git-native-v1') {
+        if (
+          !scope.fork ||
+          body.fork_revision?.repository !== scope.fork ||
+          typeof body.fork_revision?.commit !== 'string' ||
+          !/^[a-f0-9]{40}$|^[a-f0-9]{64}$/.test(body.fork_revision.commit)
+        )
+          return error(
+            'INVALID_CAPTURE',
+            'Agent must finish with its assigned Git fork revision',
+            409,
+          );
+        using fork = await env.ARTIFACTS.get(scope.fork.split('/')[1]);
+        if (!(await fork.readCommit(body.fork_revision.commit)))
+          return error(
+            'INVALID_CAPTURE',
+            'Agent revision has not been pushed to its assigned fork',
+            409,
+          );
+        const { workspace: _legacyWorkspace, git_verified: _claimedVerified, ...metadata } = body;
+        command = { op: 'finish', ...identity, result: { ...metadata, git_verified: true } };
+      }
       if (job.kind === 'evaluate') {
         const stored = await object(env, JSON.stringify(body));
         command = { op: 'verify_finish', ...identity, report: body, evidence: stored.digest };
       }
-      if (job.kind === 'capture') {
-        if (!scope.fork || body.revision?.repository !== scope.fork)
-          return error('FORBIDDEN', 'Captured repository mismatch', 403);
-        using captured = await env.ARTIFACTS.get(scope.fork.split('/')[1]);
-        const commit = await captured.readCommit(body.revision.commit);
-        if (
-          !commit ||
-          commit.treeHash !== body.tree ||
-          commit.parents.length !== 1 ||
-          commit.parents[0] !== job.payload.base.commit
-        )
-          return error('INVALID_CAPTURE', 'Captured commit identity or parent mismatch', 409);
-        if (typeof body.diff !== 'string')
-          return error('INVALID_CAPTURE', 'Trusted capture must supply the full diff', 409);
-        // Only the container-derived capture capability can create this binding, after
-        // checking the freshly pushed commit. Never accept a caller-provided R2 digest.
-        const stored = await object(env, body.diff, CANDIDATE_DIFF_LIMIT);
-        const { diff: _diff, diff_digest: _claimedDigest, ...metadata } = body;
-        command = {
-          op: 'finish',
-          ...identity,
-          result: { ...metadata, diff_digest: stored.digest },
-        };
-      }
+      if (job.kind === 'capture') command = await captureResult(env, scope, body);
       await attemptLog(env, scope, 'execution.completion_received');
       const result = await ledger(env, scope.repo_id, command);
       await stub.scheduleStop();
@@ -141,6 +155,6 @@ export const brokerHandler: OutboundHandler<Env> = async (req, env, ctx) => {
     }
     return error('FORBIDDEN', 'Unknown broker operation', 403);
   } catch (e: any) {
-    return error(e.code ?? 'BROKER_FAILED', e.message, 409);
+    return error(e.code ?? 'BROKER_FAILED', e.message, e.code === 'FORBIDDEN' ? 403 : 409);
   }
 };

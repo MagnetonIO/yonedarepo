@@ -4,19 +4,24 @@ import { candidateDetail, candidateSource, hydrateOwnerSnapshot } from './candid
 import { evidence } from './evidence';
 import { externalGit } from './external-git';
 import { grantRoute } from './grants';
+import { historyDetail } from './history-archive';
+import { candidateDiffPage } from './history-pages';
 import { error, readJson, response, safeId } from './http';
 import { failureCode, writeLog } from './logging';
 import { projectRoute } from './projects';
 import { settingsRoute } from './provider-settings';
 import { remoteMcp } from './remote-mcp';
+import { ownerCommandInput, repositoryOperationAllowed } from './repository-command';
 import { deleteRepository } from './repository-deletion';
 import { resynchronize } from './repository-recovery';
 import { reviewerGuard, reviewerRoute } from './reviewer';
+import { submitReviewerRepair } from './reviewer-trial';
 import { checkLedger } from './runtime';
 import { ownerSession } from './session';
 import { siteRoute } from './sites';
 import { ledger, sha } from './storage';
 import { teamTaskSource } from './team-source';
+import { approveTestPolicy } from './test-policy';
 import type { Env, Json } from './types';
 import { providerCredentials } from './vault';
 import { websiteAssets } from './website-metadata';
@@ -121,7 +126,15 @@ export async function fetchRequest(req: Request, env: Env): Promise<Response> {
     }
     const parts = url.pathname.split('/').filter(Boolean);
     const repo = parts[2];
-    const action = parts[3] ?? 'snapshot';
+    const requestedAction = parts[3] ?? 'snapshot';
+    const action =
+      req.method === 'GET' && requestedAction === 'overview'
+        ? 'repository_overview'
+        : req.method === 'GET' && requestedAction === 'runs'
+          ? parts[4]
+            ? 'run_detail'
+            : 'runs_page'
+          : requestedAction;
     if (parts[1] !== 'repos' || !safeId(repo)) return error('NOT_FOUND', 'Unknown API route', 404);
     if (parts.length === 4 && action === 'delete_repository' && req.method === 'POST')
       return await deleteRepository(req, env, principal, repo);
@@ -131,6 +144,8 @@ export async function fetchRequest(req: Request, env: Env): Promise<Response> {
       return error('FORBIDDEN', 'Use project creation to initialize a repository', 403);
     if (action === 'resync_repository' && req.method === 'POST')
       return await resynchronize(req, env, principal, repo);
+    if (action === 'approve_test_bundle' && req.method === 'POST')
+      return await approveTestPolicy(req, env, principal, repo);
     if (action === 'grants') return grantRoute(req, env, principal, repo);
     if (action === 'site' && req.method === 'GET') {
       const s = await ledger(env, repo, { op: 'repository_status' });
@@ -145,6 +160,18 @@ export async function fetchRequest(req: Request, env: Env): Promise<Response> {
       return await candidateDetail(env, repo, url.searchParams.get('id') ?? '');
     if (action === 'candidate_source' && req.method === 'GET')
       return await candidateSource(env, repo, url.searchParams.get('id') ?? '');
+    if (action === 'candidate_diff' && req.method === 'GET')
+      return response(
+        await candidateDiffPage(
+          env,
+          repo,
+          url.searchParams.get('run_id') ?? '',
+          url.searchParams.get('id') ?? '',
+          url.searchParams.get('cursor') ?? undefined,
+          url.searchParams.has('limit') ? Number(url.searchParams.get('limit')) : 50,
+          url.searchParams.get('watermark') ?? undefined,
+        ),
+      );
     if (action === 'team_source' && req.method === 'GET')
       return await teamTaskSource(
         env,
@@ -153,46 +180,22 @@ export async function fetchRequest(req: Request, env: Env): Promise<Response> {
         url.searchParams.get('task_id') ?? '',
       );
     if (action === 'live' && req.headers.get('upgrade')?.toLowerCase() === 'websocket') {
-      await ledger(env, repo, { op: 'snapshot' });
+      await ledger(env, repo, { op: 'repository_status' });
       return env.LIVE.get(env.LIVE.idFromName(repo)).fetch(req);
     }
-    const allowed =
-      req.method === 'GET'
-        ? [
-            'snapshot',
-            'events',
-            'graph',
-            'why',
-            'decision',
-            'context_search',
-            'context_get',
-            'context_usage',
-            'execution_logs',
-          ]
-        : req.method === 'POST'
-          ? [
-              'init',
-              'start_run',
-              'accept',
-              'cancel_run',
-              'observe',
-              'update_policy',
-              'context_publish',
-              'configure_context_study',
-              'retry_team_task',
-            ]
-          : [];
-    if (!allowed.includes(action)) return error('NOT_FOUND', 'Unknown repository operation', 404);
-    const input: Json =
-      req.method === 'GET' ? Object.fromEntries(url.searchParams) : await readJson(req, 256 * 1024);
-    for (const key of [
-      'after',
-      'depth',
-      'limit',
-      ...(action === 'context_usage' ? ['cursor', 'epoch'] : []),
-    ])
-      if (input[key] !== undefined) input[key] = Number(input[key]);
+    if (!repositoryOperationAllowed(req.method, action))
+      return error('NOT_FOUND', 'Unknown repository operation', 404);
+    const input = await ownerCommandInput(req, action);
+    if (action === 'run_detail' && requestedAction === 'runs')
+      input.run_id = decodeURIComponent(parts[4]);
+    if (action === 'run_detail') {
+      if (typeof input.run_id !== 'string' || !input.run_id)
+        return error('INVALID_INPUT', 'Missing run_id');
+      return response(await historyDetail(env, repo, input.run_id));
+    }
+
     if (action === 'init') {
+      input.workspace_transport = 'git-native-v1';
       if (input.id !== repo || input.remote?.namespace !== env.ARTIFACTS_NAMESPACE)
         return error('INVALID_INPUT', 'Repository identity mismatch');
       using remote = await env.ARTIFACTS.get(input.remote.name);
@@ -200,7 +203,10 @@ export async function fetchRequest(req: Request, env: Env): Promise<Response> {
       if (head !== input.commit)
         return error('HEAD_MOVED', 'Initialization must use the actual canonical HEAD', 409);
     }
-    if (action === 'start_run') checkLedger(await ledger(env, repo, { op: 'snapshot' }), input);
+    if (action === 'start_run') {
+      input.workspace_transport = 'git-native-v1';
+      checkLedger(await ledger(env, repo, { op: 'repository_status' }), input);
+    }
     if (action === 'start_run' && principal.role === 'user') {
       const settings = await workspace(env, principal.workspace, { op: 'settings' });
       if (
@@ -244,24 +250,16 @@ export async function fetchRequest(req: Request, env: Env): Promise<Response> {
         checked.add(id);
       }
     }
-    // Authority fields are assigned here; model/browser JSON cannot become an internal attempt.
-    for (const key of [
-      'job_id',
-      ...(action === 'context_usage' ? [] : ['epoch']),
-      '_workspace',
-      '_grant',
-      'session_id',
-      'actor',
-      'author',
-      'workspace',
-    ])
-      delete input[key];
-    const value = await ledger(env, repo, {
+    const command = {
       ...input,
       op: action,
       _workspace: principal.workspace,
       ...(action === 'init' ? { workspace: principal.workspace } : {}),
-    });
+    };
+    const value =
+      action === 'repair_team' && principal.reviewer
+        ? await submitReviewerRepair(env, principal.workspace, repo, command)
+        : await ledger(env, repo, command);
     if (action === 'cancel_run')
       for (const stop of value.stop) {
         const name = await sha(`${repo}:${stop.job_id}:${stop.epoch}`);

@@ -5,18 +5,23 @@ import type { Graph, Snapshot } from '../../lib/types';
 import { Exploration } from '../exploration/Exploration';
 import { SiteLink } from '../exploration/SiteLink';
 import { GraphWorkspace } from '../graph/GraphWorkspace';
+import { ConflictStatusPanel } from '../history/ConflictStatusPanel';
 import { HistoryTools } from '../history/HistoryTools';
 import type { WorkspacePanel } from './WorkspacePanels';
 
 export function RepositoryWorkspace({
   reviewer = false,
   snapshot,
+  initialRunId = '',
+  requestedRunError = '',
   onChange,
   onError,
   onPanel,
 }: {
   reviewer?: boolean;
   snapshot: Snapshot;
+  initialRunId?: string;
+  requestedRunError?: string;
   onChange: () => Promise<void>;
   onError: (message: string) => void;
   onPanel: (panel: WorkspacePanel) => void;
@@ -58,6 +63,14 @@ export function RepositoryWorkspace({
           <code>{short(repo.published_commit)}</code>
         </div>
       )}
+      {(repo.status === 'blocked' || view === 'history') && (
+        <ConflictStatusPanel
+          repository={repo}
+          reviewer={reviewer}
+          onChange={onChange}
+          onError={onError}
+        />
+      )}
       {view === 'runs' && (
         <Exploration
           reviewer={reviewer}
@@ -67,7 +80,8 @@ export function RepositoryWorkspace({
           onProviders={() => onPanel('providers')}
           onAgents={() => onPanel('agents')}
           onSelectedRun={setEvidenceRun}
-          initialRunId={evidenceRun}
+          initialRunId={evidenceRun || initialRunId}
+          requestedRunError={requestedRunError}
           onContext={(id) => {
             setEvidenceRun(id);
             setView('graph');

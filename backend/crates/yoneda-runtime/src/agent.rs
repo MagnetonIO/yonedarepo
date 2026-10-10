@@ -11,10 +11,21 @@ use tokio::process::Command;
 use yoneda_core::Result;
 pub(crate) async fn execute(job: &Value, root: &Path, transcript: &Transcript) -> Result<Value> {
     let approved_budget = crate::execution_limits::model_budget(job)?;
-    let baseline = super::jobs::workspace(job, root).await?;
+    let git_native = crate::transport::enabled(job);
+    let baseline = if git_native {
+        crate::transport::prepare_agent_workspace(job, root).await?;
+        yoneda_core::Workspace::new()
+    } else {
+        super::jobs::workspace(job, root).await?
+    };
+    let git_baseline = if git_native && job["payload"]["team_planning"] == true {
+        Some(crate::transport::snapshot_read_only(root).await?)
+    } else {
+        None
+    };
     #[cfg(target_os = "linux")]
     {
-        Command::new("chown")
+        Command::new("/usr/bin/chown")
             .args(["-R", "1000:1000", "/work", "/home/agent"])
             .status()
             .await
@@ -23,7 +34,10 @@ pub(crate) async fn execute(job: &Value, root: &Path, transcript: &Transcript) -
     let payload = &job["payload"];
     let execution = &payload["execution"];
     let model = field(job, "model")?;
-    let prompt = crate::prompt::prompt(payload)?;
+    let mut prompt = crate::prompt::prompt(payload)?;
+    if git_native {
+        prompt.push_str("\n\nWorkspace transport: git-native-v1. Commit your completed changes on branch main and push them to origin. Preserve the existing history and do not modify remote URLs or credentials.\n");
+    }
     let mcp = json!({"mcpServers":{"yonedarepo":{"command":"/usr/local/bin/yoneda-runtime","args":["mcp"]}}});
     std::fs::write("/home/agent/mcp.json", mcp.to_string()).map_err(err)?;
     std::fs::create_dir_all("/home/agent/.codex").map_err(err)?;
@@ -33,7 +47,7 @@ pub(crate) async fn execute(job: &Value, root: &Path, transcript: &Transcript) -
     std::fs::write("/home/agent/.codex/config.toml", config).map_err(err)?;
     #[cfg(target_os = "linux")]
     {
-        Command::new("chown")
+        Command::new("/usr/bin/chown")
             .args(["-R", "1000:1000", "/home/agent"])
             .status()
             .await
@@ -110,6 +124,26 @@ pub(crate) async fn execute(job: &Value, root: &Path, transcript: &Transcript) -
     if execution["role"] == "research" {
         return Ok(json!({"transcript":evidence["digest"],"model":model}));
     }
+    if git_native {
+        let commit = crate::git::git(root, &["rev-parse", "HEAD"]).await?;
+        if let Some(snapshot) = &git_baseline {
+            crate::transport::verify_read_only(root, snapshot).await?;
+            return Ok(git_agent_result(
+                job,
+                commit,
+                true,
+                &evidence["digest"],
+                model,
+            ));
+        }
+        return Ok(git_agent_result(
+            job,
+            commit,
+            false,
+            &evidence["digest"],
+            model,
+        ));
+    }
     let files = export_with_baseline(root, &baseline)?;
     if payload["team_planning"] == true {
         crate::team_workspace::validate_read_only(&baseline, &files)?;
@@ -122,6 +156,25 @@ pub(crate) async fn execute(job: &Value, root: &Path, transcript: &Transcript) -
     }
     let uploaded = broker("/workspace", json!({"files":files}), true).await?;
     Ok(json!({"workspace":uploaded["digest"],"transcript":evidence["digest"],"model":model}))
+}
+
+fn git_agent_result(
+    job: &Value,
+    commit: String,
+    planning: bool,
+    transcript: &Value,
+    model: &str,
+) -> Value {
+    let mut result = json!({
+        "fork_revision":crate::transport::candidate_revision(job, commit),
+        "transcript":transcript,
+        "model":model
+    });
+    if planning {
+        result["planning"] = json!(true);
+        result["source_unchanged"] = json!(true);
+    }
+    result
 }
 
 fn gemini_settings(
