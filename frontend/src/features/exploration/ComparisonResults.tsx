@@ -57,6 +57,22 @@ export function ComparisonResults({
       !execution.parent_execution &&
       execution.comparison_role !== 'repair',
   );
+  const originals = snapshot.executions.filter((execution) => execution.run_id === run.id);
+  const delegated =
+    (run.delegation?.enabled === true &&
+      (!Number.isSafeInteger(run.delegation.max_executions) ||
+        run.delegation.max_executions > 2)) ||
+    originals.length !== 2 ||
+    ![1, 2].every((index) =>
+      originals.some(
+        (execution) =>
+          execution.id === `${run.id}:agent-${index}` &&
+          execution.role === 'coding' &&
+          !execution.parent_execution &&
+          (execution.depth == null || execution.depth === 0),
+      ),
+    );
+  const reviewCompatible = originalBuilders.length === 2 && !delegated;
   const selectedId =
     comparison?.selected_candidate_id ??
     (!comparison ? runWorkingBranch(snapshot, run)?.latest_candidate_id : undefined);
@@ -68,8 +84,9 @@ export function ComparisonResults({
   const reviewController = controllers.current.get('approve_comparison_review');
   const chooseController = controllers.current.get('select_comparison_candidate');
   const reviewCandidates = builderCandidates;
-  const reviewBlocker =
-    originalBuilders.length !== 2 || reviewCandidates.length !== 2
+  const reviewBlocker = delegated
+    ? 'Automatic review requires two original builders without delegated or additional executions. Choose a checked result manually.'
+    : originalBuilders.length !== 2 || reviewCandidates.length !== 2
       ? 'Review needs exactly two captured alternatives.'
       : reviewCandidates
           .map((candidate) => comparisonChoiceBlocker(snapshot, run, candidate, true))
@@ -148,7 +165,7 @@ export function ComparisonResults({
       {!comparison?.approval && (
         <p>
           These results have not been automatically reviewed. You can choose a checked result
-          yourself{originalBuilders.length === 2 ? ' or approve a review.' : '.'}
+          yourself{reviewCompatible ? ' or approve a review.' : '.'}
         </p>
       )}
       {comparison?.status === 'needs_attention' && run.status !== 'cancelled' && (
@@ -178,7 +195,7 @@ export function ComparisonResults({
       {selected && card(selected, candidates.indexOf(selected), true)}
       {selected && !comparison?.approval && choose(selected)}
       {!selected && <ComparisonAssessment comparison={comparison} />}
-      {!comparison?.approval && originalBuilders.length === 2 && (
+      {!comparison?.approval && reviewCompatible && (
         <button
           type="button"
           className="quiet"
