@@ -1,4 +1,4 @@
-import { ArrowLeft, GitBranch, GitCompareArrows, Network } from 'lucide-react';
+import { ArrowLeft, GitBranch, GitCompareArrows, LoaderCircle, Network } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { GuidedSession, GuidedStepId } from '../../../../shared/guided-runs';
 import { short } from '../../lib/api';
@@ -58,10 +58,18 @@ export function RepositoryWorkspace({
     if (typeof bound?.guided?.session_id === 'string')
       onGuidedSession(snapshot.repository.id, bound.guided.session_id);
   }, [snapshot.runs, snapshot.repository.id, guidedSessionId, onGuidedSession, nativeGuide]);
+  // Each request to open a run, even the same run again, scrolls to and focuses its heading.
+  const [runFocus, setRunFocus] = useState(0);
   function inspectGuideRun(runId: string, _step: GuidedStepId, _candidate?: string, kind?: string) {
     setGuidedRunId(runId);
     setEvidenceRun(runId);
-    setView(kind?.includes('conflict') ? 'history' : kind?.includes('context') ? 'graph' : 'runs');
+    const next = kind?.includes('conflict')
+      ? 'history'
+      : kind?.includes('context')
+        ? 'graph'
+        : 'runs';
+    if (next === 'runs') setRunFocus((count) => count + 1);
+    setView(next);
   }
   const [evidenceRun, setEvidenceRun] = useState('');
   const [history, setHistory] = useState<Graph | null>(null);
@@ -88,6 +96,13 @@ export function RepositoryWorkspace({
             {label}
           </button>
         ))}
+        {(guidedRun.refreshing || guidedRun.refreshError) && (
+          <span className="live-updating" role="status">
+            {guidedRun.refreshError
+              ? 'Could not update; showing the last loaded state'
+              : 'Updating…'}
+          </span>
+        )}
         {repo.site && (
           <div className="tab-site">
             <SiteLink repo={repo.id} publishedCommit={repo.site.commit} />
@@ -118,6 +133,7 @@ export function RepositoryWorkspace({
           onState={setGuideState}
           onInspect={inspectGuideRun}
           onProviders={() => onPanel('agents')}
+          onRefreshSnapshot={onChange}
         />
       )}
       {/* The Runs toolbar carries its own back link beside its actions. */}
@@ -133,15 +149,24 @@ export function RepositoryWorkspace({
           </button>
         </p>
       )}
+      {/* Only the first read of a selected run replaces its view; live updates keep it rendered. */}
       {view === 'runs' && guidedRun.loading && (
-        <p role="status">Loading this run’s current source and checks…</p>
+        <p className="workspace-inline-status" role="status">
+          <LoaderCircle size={16} className="spin" aria-hidden="true" />
+          Loading this run’s current source and checks…
+        </p>
       )}
-      {view === 'runs' && guidedRun.error && <p role="alert">{guidedRun.error}</p>}
+      {view === 'runs' && guidedRun.error && (
+        <p className="workspace-inline-status" role="alert">
+          {guidedRun.error}
+        </p>
+      )}
       {view === 'runs' && !guidedRun.loading && !guidedRun.error && (
         <Exploration
           reviewer={reviewer}
           snapshot={visible}
           focusedRunId={guidedRunId || undefined}
+          focusRequest={runFocus}
           onGuidedDemo={onGuidedDemo}
           onGuidedContinue={guideSession === undefined ? undefined : () => setView('guided')}
           onChange={onChange}

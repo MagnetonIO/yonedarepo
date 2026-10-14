@@ -1,5 +1,11 @@
+import { RefreshCw } from 'lucide-react';
 import { type GuidedSession, type GuidedStepId, guidedSteps } from '../../../../shared/guided-runs';
 import { short } from '../../lib/api';
+import { GuidedEvidenceList } from './GuidedEvidenceList';
+import { GuidedProgress } from './GuidedProgress';
+import { runningExplanations } from './guidedEvidenceView';
+import { type GuideRefreshState, guideRefreshText } from './guidedRefresh';
+import { type GuidedRunFacts, guidedStepLinks, guidedStepReason } from './guidedStepView';
 import './guided-demo.css';
 
 const statusLabels = {
@@ -15,12 +21,17 @@ export function GuidedSessionPanel({
   onStart,
   onInspect,
   onRefresh,
+  refresh = { refreshing: false },
+  runs = {},
 }: {
   session: GuidedSession;
   busy: boolean;
   onStart: (step: GuidedStepId) => void;
   onInspect: (run: string, step: GuidedStepId, candidate?: string, kind?: string) => void;
   onRefresh: () => void;
+  refresh?: GuideRefreshState;
+  /** Status and variant of the session's runs, from the repository snapshot. */
+  runs?: Record<string, GuidedRunFacts>;
 }) {
   const next = session.steps.find((step) => step.id === session.next_step);
   const definition = guidedSteps.find((step) => step.id === session.next_step);
@@ -39,17 +50,40 @@ export function GuidedSessionPanel({
           <h2>Your guided task board</h2>
           <p>A fresh project. Progress comes from this session’s recorded work and checks.</p>
         </div>
-        <button className="quiet" type="button" disabled={busy} onClick={onRefresh}>
-          Refresh guide
-        </button>
+        <div className="guided-refresh">
+          <button
+            className="icon-button"
+            type="button"
+            disabled={busy || refresh.refreshing}
+            aria-busy={refresh.refreshing}
+            onClick={onRefresh}
+            aria-label="Refresh guide"
+            title="Refresh guide"
+          >
+            <RefreshCw
+              size={16}
+              aria-hidden="true"
+              className={refresh.refreshing ? 'spin' : undefined}
+            />
+          </button>
+          <small
+            className={`guided-refresh-status${refresh.error && !refresh.refreshing ? ' failed' : ''}`}
+            aria-live="polite"
+          >
+            {guideRefreshText(refresh)}
+          </small>
+        </div>
       </div>
+      <GuidedProgress session={session} />
       <ol className="guided-stages">
         {guidedSteps.map((definition) => {
           const step = session.steps.find((item) => item.id === definition.id);
           if (!step) return null;
           const runId = lastRun(step);
+          const links = guidedStepLinks(step, runs);
+          const reason = guidedStepReason(step, runs);
           return (
-            <li key={step.id} aria-current={session.next_step === step.id ? 'step' : undefined}>
+            <li key={step.id} className={session.next_step === step.id ? 'current' : undefined}>
               <div className="guided-stage-heading">
                 <h3>{definition.title}</h3>
                 <span className={`guided-status guided-${step.status}`}>
@@ -61,73 +95,43 @@ export function GuidedSessionPanel({
                 </span>
               </div>
               <p>{definition.description}</p>
+              {step.status === 'running' &&
+                !(step.id === 'review' && step.next_action === 'review_and_publish') && (
+                  <p className="guided-running-note">{runningExplanations[step.id]}</p>
+                )}
               {step.revision && (
-                <p className="subtle">
-                  Recorded revision <code>{short(step.revision.commit)}</code>
+                <p className="guided-revision">
+                  <code title={step.revision.commit}>rev {short(step.revision.commit)}</code>
                 </p>
               )}
               {!!step.evidence.length && (
-                <ul className="guided-evidence">
-                  {step.evidence.map((item, index) => {
-                    const kind =
-                      item.kind.includes('context') || item.kind === 'design_choice'
-                        ? 'context'
-                        : item.kind.includes('resolution') && item.verified
-                          ? 'conflict'
-                          : item.kind;
-                    const evidenceRun = item.run_id ?? (item.candidate_id ? '' : runId);
-                    return (
-                      <li key={`${item.kind}:${item.record_id ?? index}`}>
-                        <span>{item.label}</span>
-                        <small>
-                          {item.kind === 'design_choice'
-                            ? 'Source-linked decision'
-                            : item.verified
-                              ? 'Verified'
-                              : 'Not yet verified'}
-                        </small>
-                        {(evidenceRun || item.candidate_id) && (
-                          <button
-                            className="text-button"
-                            type="button"
-                            disabled={busy}
-                            onClick={() =>
-                              onInspect(evidenceRun ?? '', step.id, item.candidate_id, kind)
-                            }
-                          >
-                            {kind === 'conflict'
-                              ? 'Inspect conflict'
-                              : kind === 'context'
-                                ? 'Inspect context'
-                                : 'Inspect evidence'}
-                          </button>
-                        )}
-                      </li>
-                    );
-                  })}
-                </ul>
+                <GuidedEvidenceList
+                  stepId={step.id}
+                  evidence={step.evidence}
+                  fallbackRun={runId}
+                  busy={busy}
+                  onInspect={onInspect}
+                />
               )}
-              {!!runId && (
-                <button
-                  className="text-button"
-                  type="button"
-                  disabled={busy}
-                  onClick={() => onInspect(runId, step.id, step.candidate_id ?? undefined)}
-                >
-                  {step.status === 'running' || !step.candidate_id ? 'View run' : 'View result'}
-                </button>
+              {reason && (
+                <div className="guided-attention">
+                  <p>{reason}</p>
+                  <small>Start a fresh guided demo to retry this step.</small>
+                </div>
               )}
-              {step.id === 'concurrent' && step.run_ids.length > 1 && (
+              {!!links.length && (
                 <div className="guided-run-links">
-                  {step.run_ids.map((id, index) => (
+                  {links.map((link) => (
                     <button
-                      className="text-button"
+                      className={
+                        link.primary ? 'quiet guided-step-action' : 'text-button guided-link'
+                      }
                       type="button"
                       disabled={busy}
-                      key={id}
-                      onClick={() => onInspect(id, step.id)}
+                      key={`${link.label}:${link.runId}`}
+                      onClick={() => onInspect(link.runId, step.id, link.candidate)}
                     >
-                      Inspect concurrent run {index + 1}
+                      {link.label} <span aria-hidden="true">→</span>
                     </button>
                   ))}
                 </div>
@@ -159,10 +163,7 @@ export function GuidedSessionPanel({
             </button>
           </>
         ) : active ? (
-          <p role="status">
-            This stage is in progress. You can inspect its run; the next stage waits for recorded
-            evidence.
-          </p>
+          <p role="status">The next step unlocks when this one finishes.</p>
         ) : next?.status === 'needs_attention' ? (
           <p role="status">
             This stage needs attention. Inspect its result and recorded checks before continuing.
