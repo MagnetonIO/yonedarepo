@@ -2349,7 +2349,7 @@ dependencies = [
 name = "yoneda-core"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "schemars",
  "serde",
  "serde_json",
@@ -2362,7 +2362,7 @@ name = "yoneda-runtime"
 version = "0.1.0"
 dependencies = [
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "fuser",
  "ignore",
  "libc",
