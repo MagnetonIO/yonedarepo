@@ -123,12 +123,21 @@ impl SourceBackend for ApiSourceClient {
     }
     fn list(&self, path: &str) -> Result<Vec<SourceNode>> {
         let version = integer(&self.status()?, "workspace_version")?;
+        // source_list is a textual prefix query, while SourceBackend lists directory children.
+        // Include the delimiter so the directory itself and similarly named siblings stay out.
+        // Callers may already pass a slash-terminated directory; never send a doubled delimiter.
+        let directory = path.trim_end_matches('/');
+        let prefix = if directory.is_empty() {
+            String::new()
+        } else {
+            format!("{directory}/")
+        };
         let mut cursor = Value::Null;
         let mut entries = Vec::new();
         loop {
             let page = self.http.command(
                 "source_list",
-                json!({"prefix":path,"recursive":false,
+                json!({"prefix":prefix,"recursive":false,
                 "cursor":cursor,"limit":200,"expected_workspace_version":version}),
             )?;
             if page["workspace_id"] != self.expected_workspace
